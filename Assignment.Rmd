@@ -1,0 +1,531 @@
+---
+title: "Machine Learning Assignment"
+author: "Kun He"
+date: "29th January 2017"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(caret)
+library(ggplot2)
+library(gtools)
+library(funModeling)
+library(rattle)
+library(rpart.plot)
+library(randomForest)
+library(plyr);library(dplyr)
+```
+
+## Background and study purpose
+
+Using devices such as Jawbone Up, Nike FuelBand, and Fitbit it is now possible to collect a large amount of data about personal activity relatively inexpensively. These type of devices are part of the quantified self movement. Data are collected on personal activities from accelerometers on the belt, forearm, arm, and dumbell of 6 participants. They were asked to perform barbell lifts correctly and incorrectly in 5 different ways. More information is available from the website here: http://groupware.les.inf.puc-rio.br/har. 
+
+This report aims to predict the manner in which they did the exercise. It uses the training dataset to build the model and cross validate the results then does the prediction of the test dataset.
+
+The training data for this project are available here:
+https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv
+
+The test data are available here:
+https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv
+
+The data for this project come from this source: http://groupware.les.inf.puc-rio.br/har. 
+
+## Data Cleaning
+
+The "pml-training.csv" dataset contains 160 variables, most of which involve a lot of NAs, missing values, etc. The variables will be selected and recoded for modeling purposes. Only 58 variables out of the 160 variables are kept for the follow up analysis. Training and testing datasets are not separated, but data cleaning is done for both to ensure consistency.
+The "pml-testing.csv" dataset is the prediction dataset, after the cleaning on the training/testing datasets are done, the same variables and settings will be applied to that dataset as well.
+
+The following steps are applied:
+
+1. Create summary satistics (See appendix)
+2. Create nzv_details using nearZeroVar()
+3. Removing variables not appropriate for modeling purposes:
+3.1 Removing constant variables
+3.2 Removing variables with lot of NAs
+3.3 Removing identical variables
+3.4 Removing variables with lot of zeros
+3.5 Removing variables with near zero variance or too many unique values
+3.6 Removing non-numeric variables with too many unique values
+3.7 Removing highly correlated variables
+
+4. Variables Recoding:
+4.1 Missing value recoding - Replacing NAs of numerics/integers with mean and categorical variables by mode
+4.2 Outlier recoding
+4.3 Recode specific variables for Dummy values etc.
+4.4 Converting variables with very less distinct values/categories to factor
+
+
+## Preparing Training, Testing and Prediction datasets
+
+```{r}
+
+setwd("C:/Users/Administrator/Dropbox/Study/3 - Data Science/1 - Coursera - Data Science/08 - Practical Machine Learning/Assignment")
+
+#Read already cleaned data
+data <- read.csv("CleanedData.csv")
+data <- data[,-1]
+Pred_set <- read.csv("pml-testing.csv")
+
+
+#Ensure that Pred_set, training and testing datasets are the same in columns and settings.
+feature.names <- names(data)
+covnames <- feature.names[-c(58)]
+Pred_set <- Pred_set[covnames]
+
+for (i in 1:length(Pred_set) ) {
+    for(j in 1:length(data)) {
+        if( length( grep(names(data[i]), names(Pred_set)[j]) ) == 1)  {
+            class(Pred_set[j]) <- class(data[i])
+        }      
+    }      
+}
+
+Pred_set <- rbind(data[2, -58] , Pred_set)
+Pred_set <- Pred_set[-1,]
+
+
+inTrain <- createDataPartition(y=data$classe, p=0.6, list=FALSE)
+Training <- data[inTrain, ]; Testing <- data[-inTrain, ]
+
+```
+
+
+## Model building, cross validation and out of sample error
+
+Three models are built and compared in terms of acuracy, speed, Interpretability. Out of sample error is basically 1 - Accurary of cross validation on the test datasets.
+
+Model                         | Accurary |   Speed    | Interpretability 
+----------------------------- | -------- | ---------- | ---------------- 
+Decision Tree                 | 88.19%   | Fast       |  OK, with graph          
+Random Forest                 | 99.81%   | Fast       |  Difficult                   
+Generalized Boosted Regression| 99.72%   | Slow       |  Difficult       
+
+
+```{r}
+
+covnames <- names(Training)[-length(names(Training))]
+form <- as.formula(paste("classe~", paste(covnames, collapse="+"), sep=""))
+
+#Decision Tree
+ptm <- proc.time()
+set.seed(123)
+modFit_dt <- rpart(form, data=Training, method="class")
+fancyRpartPlot(modFit_dt)
+result_dt <- confusionMatrix(predict(modFit_dt, Testing, type = "class"), Testing$classe)
+result_dt
+
+plot(result_dt$table, col = result_dt$byClass*1+1, 
+     main = paste("Decision Tree Confusion Matrix: Accuracy =", 
+                  round(result_dt$overall['Accuracy'], 4)))
+proc.time() - ptm
+
+
+#Random Forest
+ptm <- proc.time()
+set.seed(123)
+modFit_rf <- randomForest(form, data=Training)
+#modFit_rf
+result_rf <- confusionMatrix(Testing$classe, predict(modFit_rf, newdata=Testing))
+result_rf
+
+#plot(modFit_rf)
+plot(result_rf$table, col = result_rf$byClass*1+1, 
+     main = paste("Random Forest Confusion Matrix: Accuracy =", 
+                  round(result_rf$overall['Accuracy'], 4)))
+proc.time() - ptm
+
+
+# Generalized Boosted Regression
+ptm <- proc.time()
+set.seed(123)
+library(plyr);library(dplyr)
+modFit_gbm <- train(form, method = "gbm", data=Training, verbose = FALSE)
+modFit_gbm
+
+result_gbm <- confusionMatrix(predict(modFit_gbm, newdata=Testing), Testing$classe)
+result_gbm
+
+#plot(modFit_gbm)
+plot(result_gbm$table, col = result_gbm$byClass*1+1, 
+     main = paste("Generalized Boosted Regression Confusion Matrix: Accuracy =", 
+                  round(result_gbm$overall['Accuracy'], 4)))
+proc.time() - ptm
+
+
+```
+
+
+## Final prediction
+
+Since Random Forests gave the highest Accuracy in the Testing dataset, it will be used for the final prediction.
+
+```{r}
+
+#Predicting Results on the Test Data
+
+Final_Pred <- predict(modFit_rf, Pred_set, type = "class")
+Final_Pred
+
+```
+
+
+
+\newpage
+## Appendix
+
+### Data Cleaning
+
+```{r eval=FALSE}
+print("Don't run me")
+
+data <- read.csv("pml-training.csv")
+
+## 1 ## Get basic understanding of Variables - Univariate analysis
+## 1.1 ## Checking NA, zeros, data type and unique values
+## 1.2 ## Checking min, max, median, sd of varaiables
+
+#data <- rbind(training, testing)
+data <- data
+for(x in 1:length(data)){
+        data[data[,x] %in% c('','#DIV/0!','#DIV/0'),x] <- NA
+}
+
+#summary(data$kurtosis_roll_dumbbell)
+
+library(funModeling)
+Univariate1=df_status(data)
+
+## 1.2 ## Checking other basic stats - min, max, median, sd of varaiables
+
+Univariate2 <- do.call(data.frame, 
+                       list(mean = vapply(data, function(x) mean(x[!(is.na(x))]), numeric(1)),
+                            median = apply(data, 2, median, na.rm=TRUE),
+                            #median = vapply(data, function(x) median(x[!(is.na(x))]), numeric(1)),
+                            min = apply(data, 2, min, na.rm=TRUE),
+                            max = apply(data, 2, max, na.rm=TRUE),
+                            sd = apply(data, 2, sd, na.rm=TRUE)
+                       ))
+
+# Writing the Univariate variable analysis (1.1 + 1.2) for future analysis and referrecne
+Univariate <- cbind (
+        var =     Univariate1$variable,
+        type =    Univariate1$type,
+        q_zeros = Univariate1$q_zeros,
+        p_zeros = Univariate1$p_zeros,
+        q_na =    Univariate1$q_na,
+        p_na =    Univariate1$p_na,    
+        mean =    Univariate2$mean,
+        median =  Univariate2$median,
+        min =     Univariate2$min,
+        max =     Univariate2$max,
+        sd =      Univariate2$sd
+)
+
+write.csv(Univariate,"Univariate.csv")
+
+library(caret)
+nzv_details = nearZeroVar(data, freqCut = 95/5, uniqueCut = 10, saveMetrics = TRUE)
+write.csv(nzv_details ,"Univariate_NearZeroVariance.csv")
+
+# How to use the results of univariate analysis #
+# Zeros: 
+# Variables with lots of zeros may be not useful for modeling, and it may bias the model
+# NA:
+# Several models automatically exclude rows with NA (random forest, for example). 
+# As a result, the final model can be biased due to several missing rows because of only one variable
+# For example, if the data contains only one out of 100 variables with 90% of NAs, 
+# the model will be training with only 10% of original rows
+# Type: 
+# Some variables are encoded as numbers, but they are codes or categories, 
+# and the models don't handle them in the same way.
+# Unique: 
+# Factor/categorical variables with a high number of different values (~30), 
+# tend to do overfitting if categories have low representative, (decision tree, for example)
+# Basic stats:
+# Useful to identify extreme values (outlier treatment) 
+
+
+# 2 #############################
+## 2 ## Eliminating features (variables)
+
+## 2.1 ## Removing constant features
+toRemove <- c()
+feature.names <- names(data)
+for (f in feature.names) 
+{
+        if (class(data[[f]]) == "numeric")
+        {  
+                if (sd(data[[f]],na.rm = TRUE)==0) 
+                {
+                        toRemove <- c(toRemove,f)
+                        cat(f,"is constant\n")
+                }
+        }  
+        else if (class(data[[f]]) == "integer") 
+        {
+                u <- unique(data[[f]])
+                if (length(u) == 1) 
+                {
+                        toRemove <- c(toRemove,f)
+                        cat(f,"is constant\n")
+                } 
+        }
+        else if (class(data[[f]]) == "character") 
+        {
+                u <- unique(data[[f]])
+                if (length(u) == 1) 
+                {
+                        toRemove <- c(toRemove,f)
+                        cat(f,"is constant\n")
+                } 
+        }
+}
+toRemove
+feature.names <- setdiff(names(data), toRemove)
+
+data <- data[, feature.names]
+write.csv(toRemove, "Elimination_1_constant_features.csv", row.names = F)
+
+## 2.2 ## Removing features with lot of NAs
+toRemove <- c()
+feature.names <- names(data)
+for (f in feature.names) 
+{
+        if (!(class(data[[f]]) == "character"))
+        {  
+                if (sum(is.na(data[[f]]))/nrow(data) > 0.5) 
+                {
+                        toRemove <- c(toRemove,f)
+                }
+        }
+}
+toRemove
+feature.names <- setdiff(names(data), toRemove)
+
+data <- data[, feature.names]
+write.csv(toRemove, "Elimination_2_features_with_lot_of_NAs.csv", row.names = F)
+
+
+## 2.3 ## Removing identical features
+features_pair <- combn(names(data), 2, simplify = F)
+toRemove <- c()
+for(pair in features_pair) 
+{ 
+        f1 <- pair[1]
+        f2 <- pair[2]
+        
+        if (!(class(data[[f1]]) == "factor") & !(class(data[[f2]]) %in% "factor"))
+        {
+                if (!(f1 %in% toRemove) & !(f2 %in% toRemove)) 
+                {
+                        if (all(data[[f1]] == data[[f2]],na.rm=TRUE)) 
+                        {
+                                cat(f1, "and", f2, "are equals.\n")
+                                toRemove <- c(toRemove, f2)
+                        }
+                }
+        }
+}
+toRemove
+feature.names <- setdiff(names(data), toRemove)
+data <- data[, feature.names]
+write.csv(toRemove, "Elimination_3_identical_features.csv", row.names = F)
+
+## 2.4 ## Removing features with lot of zeros
+toRemove <- c()
+feature.names <- names(data)
+for (f in feature.names) 
+{
+        if (!(class(data[[f]]) == "character"))
+        {  
+                if (sum(data[[f]]==0,na.rm = TRUE)/nrow(data) > 0.7) 
+                {
+                        toRemove <- c(toRemove,f)
+                }
+        }
+}
+toRemove
+feature.names <- setdiff(names(data), toRemove)
+
+data <- data[, feature.names]
+write.csv(toRemove, "Elimination_4_features_with_lot_of_zeros.csv", row.names = F)
+
+## 2.5 ## Removing features with near zero variance or too many unique values
+
+nzv_cols = nearZeroVar(data, freqCut = 95/5, uniqueCut = 10)
+names(data[, c(6,17,54,84)])
+summary(data$amplitude_yaw_belt)
+summary(data$amplitude_yaw_dumbbell)
+summary(data$new_window)
+summary(data$type)
+
+#nzv_cols <- c(17, 54)
+
+#if(length(nzv_cols) > 0) data <- data[, -nzv_cols]
+
+toRemove <- setdiff(feature.names, names(data))
+
+toRemove
+write.csv(toRemove, "Elimination_5_features_with_nzv.csv", row.names = F)
+
+#table(training$new_window)
+#data <- cbind(data, training$new_window)
+
+## 2.6 ## Removing non-numeric features with too many unique values (categories)
+toRemove <- c()
+feature.names <- names(data)
+for (f in feature.names) 
+{
+        if (class(data[[f]]) %in% c("character", "factor") )
+        {
+                u <- unique(data[[f]])
+                if (length(u)/nrow(data) > 0.2) 
+                {
+                        toRemove <- c(toRemove,f)
+                        cat(f,"has too many categories\n")
+                } 
+                else if (length(u) > 20) 
+                {
+                        toRemove <- c(toRemove,f)
+                        cat(f,"has too many categories\n")
+                } 
+        }
+}
+toRemove
+feature.names <- setdiff(names(data), toRemove)
+
+data <- data[, feature.names]
+write.csv(toRemove, "Elimination_6_features_with_toomanycategories.csv", row.names = F)
+
+## 2.7 ## Removing highly correlated features
+features_pair <- combn(names(data), 2, simplify = F)
+toRemove <- c()
+for(pair in features_pair) 
+{
+        f1 <- pair[1]
+        f2 <- pair[2]
+        if ((class(data[[f1]]) %in% "numeric") & (class(data[[f2]]) %in% "numeric"))  
+        {
+                if (!(f1 %in% toRemove) & !(f2 %in% toRemove))
+                {
+                        if ((cor(data[[f1]] , data[[f2]],use="complete")) > 0.75) 
+                        {
+                                cat(f1, "and", f2, "are highly correlated \n")
+                                toRemove <- c(toRemove, f2)
+                        }
+                }
+        }
+}
+toRemove
+
+dim(data)
+
+cor(data$roll_belt, data$yaw_belt)
+plot(data$roll_belt, data$yaw_belt)
+summary(lm(data$roll_belt~data$yaw_belt))
+cor(data$gyros_dumbbell_z, data$gyros_forearm_z)
+plot(data$gyros_dumbbell_z, data$gyros_forearm_z)
+summary(lm(data$gyros_dumbbell_z~data$gyros_forearm_z))
+
+library(dplyr)
+ds <- filter(data, gyros_forearm_z<200)
+cor(ds$gyros_dumbbell_z, ds$gyros_forearm_z)
+plot(ds$gyros_dumbbell_z, ds$gyros_forearm_z)
+
+toRemove <- "yaw_belt"
+feature.names <- setdiff(names(data), toRemove)
+data <- data[, feature.names]
+write.csv(toRemove, "Elimination_7_HighlyCorrelated_features.csv", row.names = F)
+
+
+
+# 3 #############################
+## 3 ## Variables Treatment
+
+## 3.1 ## Missing value treatment - Replacing NAs with mean/median/mode
+getMode <- function (x, na.rm) {
+        xtab <- table(x)
+        xmode <- names(which(xtab == max(xtab)))
+        if (length(xmode) > 1) xmode <- ">1 mode"
+        return(xmode)
+}
+# MVT on data
+for (var in 1:ncol(data)) {
+        if (class(data[,var])=="numeric") 
+        {data[is.na(data[,var]),var] <- mean(data[,var], na.rm = TRUE)} 
+        else if (class(data[,var]) %in% c("character", "factor")) 
+        {data[is.na(data[,var]),var] <- getMode(data[,var], na.rm = TRUE)}
+        else if (class(data[,var]) %in% c("integer")) 
+        {data[is.na(data[,var]),var] <- as.integer(round(mean(data[,var], na.rm = TRUE),0))}  
+}
+
+## 3.2 ## Outlier treatment
+fun <- function(x)
+{
+        quantiles <- quantile( x, c(.002, .998))
+        x[ x < quantiles[1] ] <- quantiles[1]
+        x[ x > quantiles[2] ] <- quantiles[2]
+        x
+}
+
+feature.names <- names(data)
+for (f in feature.names) 
+{
+        if (class(data[[f]]) == "numeric") 
+                #Not applicable to Integer, Character or factor variables
+        {
+                data[[f]] <- fun(data[[f]])
+        } 
+}
+
+## 3.3 ## Manually treating specific variables for Dummy values etc.
+
+### Fixing -999999 - NOT NEEDED
+
+Dummy <- -999999
+
+getMode <- function (x, na.rm) {
+        xtab <- table(x)
+        xmode <- names(which(xtab == max(xtab)))
+        if (length(xmode) > 1) xmode <- ">1 mode"
+        return(xmode)
+}
+
+for (var in 1:ncol(data)) 
+{
+        if (class(data[,var]) %in% c("numeric"))
+        { data[data[,var] == Dummy ,var] <- mean(data[,var], na.rm = TRUE) } 
+        else if (class(data[,var]) %in% c("character", "factor")) 
+        { data[data[,var] == Dummy ,var] <- getMode(data[,var], na.rm = TRUE) }
+        else if (class(data[,var]) %in% c("integer")) 
+        { data[data[,var] == Dummy ,var] <- as.integer(0) }  
+}
+
+
+## 3.4 ## Converting variables with very less distinct values/categories to factor
+
+toconvert <- c()
+feature.names <- names(data)
+for (f in feature.names) 
+{
+        if (!(class(data[[f]]) == "numeric"))
+        {
+                u <- unique(data[[f]])
+                if (length(u) < 6) 
+                {
+                        toconvert <- c(toconvert,f)
+                        # Converting to factor
+                        data[[f]] <- factor(data[[f]])
+                        cat(f,"is a factor variable\n")
+                } 
+        }
+}
+toconvert
+
+
+# Write cleaned data to disc
+write.csv(data, "CleanedData.csv", row.names = F)
+
+```
+
